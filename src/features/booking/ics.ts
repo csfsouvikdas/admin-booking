@@ -9,7 +9,10 @@ export function downloadIcs(args: {
   const dt = new Date(`${args.date}T${args.time}:00`);
   const end = new Date(dt.getTime() + args.durationMin * 60000);
   const fmt = (d: Date) =>
-    d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    d
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}/, "");
   const ics = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",

@@ -1,5 +1,6 @@
-// Shared in-memory store using React state via a tiny pub/sub.
-// Keeps admin + public pages in sync within the same browser tab.
+// Shared store in frontend with REST API synchronisation to Express backend.
+// Falls back to in-memory React state if the backend is down.
+// Implements auto-polling to sync multiple clients and tabs simultaneously.
 import { useEffect, useState } from "react";
 
 export type Service = {
@@ -30,6 +31,7 @@ export type Booking = {
   status: BookingStatus;
   payment: PaymentStatus;
   createdAt: string;
+  createdByAdmin?: boolean;
 };
 
 export type Availability = {
@@ -46,6 +48,8 @@ type State = {
   availability: Availability;
 };
 
+const BACKEND_URL = "http://appointment-api.twinstdio.com";
+
 const rand = (n = 8) => {
   const c = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from({ length: n }, () => c[Math.floor(Math.random() * c.length)]).join("");
@@ -55,21 +59,9 @@ const today = new Date();
 const ym = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
 const d = (day: number) => `${ym}-${String(day).padStart(2, "0")}`;
 
-const seedServices: Service[] = [
-  { id: "s1", name: "1-on-1 Consultation", description: "Personalised one-to-one strategy session.", duration: 60, category: "Consulting", type: "paid", price: 999, maxAttendees: 1, active: true },
-  { id: "s2", name: "Group Workshop", description: "Hands-on workshop in a small group setting.", duration: 90, category: "Workshop", type: "paid", price: 499, maxAttendees: 10, active: true },
-  { id: "s3", name: "Free Discovery Call", description: "Quick intro call to see if we're a good fit.", duration: 30, category: "Consulting", type: "free", price: 0, maxAttendees: 1, active: true },
-  { id: "s4", name: "Resume Review", description: "Detailed review of your CV with feedback.", duration: 45, category: "Career", type: "paid", price: 299, maxAttendees: 1, active: true },
-];
+const seedServices: Service[] = [];
 
-const seedBookings: Booking[] = [
-  { id: rand(), serviceId: "s1", date: d(Math.min(5, 28)), time: "10:00", attendees: 1, clientName: "Aarav Sharma", email: "aarav@example.com", phone: "+91 90000 11111", status: "confirmed", payment: "paid", createdAt: new Date().toISOString(), notes: "Wants to discuss product launch." },
-  { id: rand(), serviceId: "s2", date: d(Math.min(8, 28)), time: "14:00", attendees: 3, clientName: "Priya Iyer", email: "priya@example.com", phone: "+91 90000 22222", status: "pending", payment: "paid", createdAt: new Date().toISOString() },
-  { id: rand(), serviceId: "s3", date: d(Math.min(12, 28)), time: "11:30", attendees: 1, clientName: "Rohan Mehta", email: "rohan@example.com", phone: "+91 90000 33333", status: "confirmed", payment: "free", createdAt: new Date().toISOString() },
-  { id: rand(), serviceId: "s4", date: d(Math.min(15, 28)), time: "15:00", attendees: 1, clientName: "Diya Kapoor", email: "diya@example.com", phone: "+91 90000 44444", status: "cancelled", payment: "paid", createdAt: new Date().toISOString() },
-  { id: rand(), serviceId: "s1", date: d(Math.min(18, 28)), time: "16:00", attendees: 1, clientName: "Vikram Singh", email: "vikram@example.com", phone: "+91 90000 55555", status: "confirmed", payment: "paid", createdAt: new Date().toISOString() },
-  { id: rand(), serviceId: "s2", date: d(Math.min(22, 28)), time: "10:30", attendees: 5, clientName: "Neha Reddy", email: "neha@example.com", phone: "+91 90000 66666", status: "pending", payment: "paid", createdAt: new Date().toISOString() },
-];
+const seedBookings: Booking[] = [];
 
 const state: State = {
   services: seedServices,
@@ -86,15 +78,205 @@ const state: State = {
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 
+let hasFetched = false;
+async function fetchInitial() {
+  if (hasFetched || typeof window === "undefined") return;
+  hasFetched = true;
+  try {
+    const [svcsRes, bkgsRes, availRes] = await Promise.all([
+      fetch(`${BACKEND_URL}/api/services`),
+      fetch(`${BACKEND_URL}/api/bookings`),
+      fetch(`${BACKEND_URL}/api/availability`),
+    ]);
+
+    if (svcsRes.ok && bkgsRes.ok && availRes.ok) {
+      const services = await svcsRes.json();
+      const bookings = await bkgsRes.json();
+      const availability = await availRes.json();
+
+      if (services.length > 0) {
+        state.services = services;
+      } else {
+        // Seed backend if empty
+        await Promise.all(
+          seedServices.map((s) =>
+            fetch(`${BACKEND_URL}/api/services`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(s),
+            }),
+          ),
+        );
+      }
+
+      if (bookings.length > 0) {
+        state.bookings = bookings;
+      } else {
+        // Seed backend if empty
+        await Promise.all(
+          seedBookings.map((b) =>
+            fetch(`${BACKEND_URL}/api/bookings`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(b),
+            }),
+          ),
+        );
+      }
+
+      state.availability = availability;
+      emit();
+      console.log("[store] successfully synced initial data from backend API.");
+    }
+  } catch (err) {
+    console.warn("[store] backend connection failed. using in-memory state:", err);
+  }
+}
+
+// Background auto-polling loop to sync concurrent sessions
+let pollIntervalId: any = null;
+function startPolling() {
+  if (pollIntervalId || typeof window === "undefined") return;
+  pollIntervalId = setInterval(async () => {
+    try {
+      const [svcsRes, bkgsRes, availRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/services`),
+        fetch(`${BACKEND_URL}/api/bookings`),
+        fetch(`${BACKEND_URL}/api/availability`),
+      ]);
+
+      if (svcsRes.ok && bkgsRes.ok && availRes.ok) {
+        const services = await svcsRes.json();
+        const bookings = await bkgsRes.json();
+        const availability = await availRes.json();
+
+        let changed = false;
+
+        if (JSON.stringify(state.services) !== JSON.stringify(services)) {
+          state.services = services;
+          changed = true;
+        }
+        if (JSON.stringify(state.bookings) !== JSON.stringify(bookings)) {
+          state.bookings = bookings;
+          changed = true;
+        }
+        if (JSON.stringify(state.availability) !== JSON.stringify(availability)) {
+          state.availability = availability;
+          changed = true;
+        }
+
+        if (changed) {
+          emit();
+        }
+      }
+    } catch (err) {
+      // Ignore background network errors
+    }
+  }, 3000);
+}
+
+async function syncService(oldList: Service[], newList: Service[]) {
+  try {
+    const oldMap = new Map(oldList.map((s) => [s.id, s]));
+    const newMap = new Map(newList.map((s) => [s.id, s]));
+
+    for (const s of newList) {
+      const oldS = oldMap.get(s.id);
+      if (!oldS) {
+        await fetch(`${BACKEND_URL}/api/services`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(s),
+        });
+      } else if (JSON.stringify(oldS) !== JSON.stringify(s)) {
+        await fetch(`${BACKEND_URL}/api/services/${s.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(s),
+        });
+      }
+    }
+
+    for (const s of oldList) {
+      if (!newMap.has(s.id)) {
+        await fetch(`${BACKEND_URL}/api/services/${s.id}`, {
+          method: "DELETE",
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("[store] service sync failed:", err);
+  }
+}
+
+async function syncBooking(oldList: Booking[], newList: Booking[]) {
+  try {
+    const oldMap = new Map(oldList.map((b) => [b.id, b]));
+
+    for (const b of newList) {
+      const oldB = oldMap.get(b.id);
+      if (!oldB) {
+        await fetch(`${BACKEND_URL}/api/bookings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(b),
+        });
+      } else if (JSON.stringify(oldB) !== JSON.stringify(b)) {
+        await fetch(`${BACKEND_URL}/api/bookings/${b.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(b),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("[store] booking sync failed:", err);
+  }
+}
+
+async function syncAvailability(a: Availability) {
+  try {
+    await fetch(`${BACKEND_URL}/api/availability`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(a),
+    });
+  } catch (err) {
+    console.warn("[store] availability sync failed:", err);
+  }
+}
+
 export const store = {
   get: () => state,
   subscribe: (cb: () => void) => {
     listeners.add(cb);
-    return () => listeners.delete(cb);
+    fetchInitial();
+    startPolling();
+    return () => {
+      listeners.delete(cb);
+      if (listeners.size === 0 && pollIntervalId) {
+        clearInterval(pollIntervalId);
+        pollIntervalId = null;
+      }
+    };
   },
-  setServices: (s: Service[]) => { state.services = s; emit(); },
-  setBookings: (b: Booking[]) => { state.bookings = b; emit(); },
-  setAvailability: (a: Availability) => { state.availability = a; emit(); },
+  setServices: (s: Service[]) => {
+    const old = [...state.services];
+    state.services = s;
+    emit();
+    syncService(old, s);
+  },
+  setBookings: (b: Booking[]) => {
+    const old = [...state.bookings];
+    state.bookings = b;
+    emit();
+    syncBooking(old, b);
+  },
+  setAvailability: (a: Availability) => {
+    state.availability = a;
+    emit();
+    syncAvailability(a);
+  },
   newId: rand,
 };
 
@@ -102,7 +284,9 @@ export function useStore() {
   const [, setT] = useState(0);
   useEffect(() => {
     const unsub = store.subscribe(() => setT((x) => x + 1));
-    return () => { unsub(); };
+    return () => {
+      unsub();
+    };
   }, []);
   return store.get();
 }
@@ -120,23 +304,56 @@ export function getSlots(date: string, service: Service): { time: string; full: 
   const s = store.get();
   const dt = new Date(date + "T00:00:00");
   const dow = dt.getDay();
+
   if (!s.availability.workingDays.includes(dow)) return [];
   if (s.availability.blockedDates.includes(date)) return [];
+
   const todayStr = new Date().toISOString().slice(0, 10);
   if (date < todayStr) return [];
 
   const startM = timeToMin(s.availability.startTime);
   const endM = timeToMin(s.availability.endTime);
-  const step = service.duration + s.availability.bufferMinutes;
+  const buffer = s.availability.bufferMinutes;
+
   const slots: { time: string; full: boolean }[] = [];
+  const step = service.duration + buffer;
+
   for (let t = startM; t + service.duration <= endM; t += step) {
     const time = minToTime(t);
-    const booked = s.bookings.filter(
-      (b) => b.serviceId === service.id && b.date === date && b.time === time && b.status !== "cancelled",
-    );
-    const taken = booked.reduce((acc, b) => acc + b.attendees, 0);
-    const full = taken >= service.maxAttendees;
+    const candidateStart = t;
+    const candidateEnd = t + service.duration;
+
+    let currentSlotAttendees = 0;
+    let isOverlapBlocked = false;
+
+    for (const b of s.bookings) {
+      if (b.status === "cancelled" || b.date !== date) continue;
+
+      const bSvc = s.services.find((x) => x.id === b.serviceId);
+      if (!bSvc) continue;
+
+      const bStart = timeToMin(b.time);
+      const bEnd = bStart + bSvc.duration;
+
+      // Same slot: group session registration
+      if (b.serviceId === service.id && b.time === time) {
+        currentSlotAttendees += b.attendees;
+      } else {
+        // Overlap scheduling conflict check:
+        // Candidate start is less than booked end + buffer AND booked start is less than candidate end + buffer
+        const hasOverlap = candidateStart < bEnd + buffer && bStart < candidateEnd + buffer;
+        if (hasOverlap) {
+          isOverlapBlocked = true;
+          break;
+        }
+      }
+    }
+
+    if (isOverlapBlocked) continue;
+
+    const full = currentSlotAttendees >= service.maxAttendees;
     slots.push({ time, full });
   }
+
   return slots;
 }
