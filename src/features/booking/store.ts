@@ -100,7 +100,10 @@ export const store = {
 
 export function useStore() {
   const [, setT] = useState(0);
-  useEffect(() => store.subscribe(() => setT((x) => x + 1)), []);
+  useEffect(() => {
+    const unsub = store.subscribe(() => setT((x) => x + 1));
+    return () => { unsub(); };
+  }, []);
   return store.get();
 }
 
