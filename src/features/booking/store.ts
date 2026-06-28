@@ -48,7 +48,7 @@ type State = {
   availability: Availability;
 };
 
-const BACKEND_URL = "http://appointment-api.twinstdio.com";
+const BACKEND_URL = "https://appointment-api.twinstdio.com";
 
 const rand = (n = 8) => {
   const c = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

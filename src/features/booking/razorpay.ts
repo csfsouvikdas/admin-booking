@@ -37,7 +37,7 @@ export async function openRazorpay(opts: {
 }) {
   try {
     // 1. Fetch Razorpay Order from the Backend
-    const orderRes = await fetch("http://appointment-api.twinstdio.com/api/payments/create-order", {
+    const orderRes = await fetch("https://appointment-api.twinstdio.com/api/payments/create-order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amountInr: opts.amountInr }),

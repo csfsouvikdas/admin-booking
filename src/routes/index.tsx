@@ -50,7 +50,7 @@ function Login({ onOk }: { onOk: () => void }) {
     setErr("");
     setLoading(true);
     try {
-      const res = await fetch("http://appointment-api.twinstdio.com/api/admin/login", {
+      const res = await fetch("https://appointment-api.twinstdio.com/api/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: u, password: p }),

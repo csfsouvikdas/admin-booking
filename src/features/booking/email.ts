@@ -13,7 +13,7 @@ export async function sendBookingEmail(
   },
 ) {
   try {
-    const res = await fetch("http://appointment-api.twinstdio.com/api/send-email", {
+    const res = await fetch("https://appointment-api.twinstdio.com/api/send-email", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind, payload }),
